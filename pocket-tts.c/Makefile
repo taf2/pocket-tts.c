@@ -11,7 +11,7 @@ MAIN = main.c
 TARGET = ptts
 LIB = libptts.a
 
-.PHONY: all clean help generic lib info
+.PHONY: all clean help generic lib info test
 
 all: help
 
@@ -24,6 +24,7 @@ help:
 	@echo "  make clean    - Remove build artifacts"
 	@echo "  make info     - Show build configuration"
 	@echo "  make lib      - Build static library"
+	@echo "  make test     - Run hello world regression test"
 	@echo ""
 	@echo "Example: make generic && ./ptts --dummy -p \"hello\" -o out.wav"
 
@@ -58,6 +59,13 @@ clean:
 info:
 	@echo "Compiler: $(CC)"
 	@echo "CFLAGS:   $(CFLAGS_BASE)"
+
+test: generic
+	@PY=python3; \
+	if [ -x ./env-syss/bin/python ]; then PY=./env-syss/bin/python; fi; \
+	REF=../pocket-tts-hello-world.wav; \
+	if [ -f /home/taf2/work/pocket-tts-c/pocket-tts-hello-world.wav ]; then REF=/home/taf2/work/pocket-tts-c/pocket-tts-hello-world.wav; fi; \
+	$$PY tools/hello_world_test.py --ptts ./ptts --model-dir ./pocket-tts-model --ref $$REF --frames 17
 
 # =============================================================================
 # Dependencies
