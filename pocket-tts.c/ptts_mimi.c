@@ -1,5 +1,9 @@
 #include "ptts_mimi.h"
 #include "ptts_internal.h"
+#include "ptts_kernels.h"
+#ifdef PTTS_USE_CUDA
+#include "ptts_cuda.h"
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,31 +115,7 @@ static void free_ptr(float **p) {
 }
 
 static void conv1d_forward_stream(const ptts_conv1d *c, const float *x, int T, float *y) {
-    int out_len = T / c->stride;
-    int in_per_group = c->in_ch / c->groups;
-    int out_per_group = c->out_ch / c->groups;
-    int left_pad = c->k - c->stride;
-
-    for (int oc = 0; oc < c->out_ch; oc++) {
-        int g = oc / out_per_group;
-        int in_base = g * in_per_group;
-        const float *wbase = c->w + (size_t)oc * in_per_group * c->k;
-        float bias = c->b ? c->b[oc] : 0.0f;
-        for (int t = 0; t < out_len; t++) {
-            float sum = bias;
-            int in_start = t * c->stride - left_pad;
-            for (int ic = 0; ic < in_per_group; ic++) {
-                const float *w = wbase + ic * c->k;
-                const float *xch = x + (size_t)(in_base + ic) * T;
-                for (int k = 0; k < c->k; k++) {
-                    int idx = in_start + k;
-                    if (idx < 0 || idx >= T) continue;
-                    sum += w[k] * xch[idx];
-                }
-            }
-            y[(size_t)oc * out_len + t] = sum;
-        }
-    }
+    ptts_conv1d_forward(y, x, c->w, c->b, c->in_ch, c->out_ch, T, c->k, c->stride, c->groups);
 }
 
 static void chw_to_thw(const float *in, int C, int T, float *out) {
@@ -157,45 +137,11 @@ static void thw_to_chw(const float *in, int T, int C, float *out) {
 }
 
 static void convtr1d_forward_stream(const ptts_convtr1d *c, const float *x, int T, float *y) {
-    int full_len = (T - 1) * c->stride + c->k;
-    int out_len = full_len - (c->k - c->stride);
-    int out_per_group = c->out_ch / c->groups;
-    int in_per_group = c->in_ch / c->groups;
-
-    memset(y, 0, (size_t)c->out_ch * out_len * sizeof(float));
-
-    for (int ic = 0; ic < c->in_ch; ic++) {
-        int g = ic / in_per_group;
-        int out_base = g * out_per_group;
-        const float *wbase = c->w + (size_t)ic * out_per_group * c->k;
-        const float *xch = x + (size_t)ic * T;
-        for (int t = 0; t < T; t++) {
-            int out_start = t * c->stride;
-            for (int ocg = 0; ocg < out_per_group; ocg++) {
-                const float *w = wbase + ocg * c->k;
-                float *ych = y + (size_t)(out_base + ocg) * out_len;
-                for (int k = 0; k < c->k; k++) {
-                    int idx = out_start + k;
-                    if (idx >= out_len) continue;
-                    ych[idx] += w[k] * xch[t];
-                }
-            }
-        }
-    }
-    if (c->b) {
-        for (int oc = 0; oc < c->out_ch; oc++) {
-            float bias = c->b[oc];
-            float *ych = y + (size_t)oc * out_len;
-            for (int t = 0; t < out_len; t++) ych[t] += bias;
-        }
-    }
+    ptts_convtr1d_forward(y, x, c->w, c->b, c->in_ch, c->out_ch, T, c->k, c->stride, c->groups);
 }
 
 static void elu_inplace(float *x, int n) {
-    for (int i = 0; i < n; i++) {
-        float v = x[i];
-        x[i] = v >= 0.0f ? v : (expf(v) - 1.0f);
-    }
+    ptts_elu_inplace(x, n);
 }
 
 static void resblock_forward(const ptts_resblock *rb, float *x, int T) {
@@ -211,23 +157,14 @@ static void resblock_forward(const ptts_resblock *rb, float *x, int T) {
     elu_inplace(tmp2, dim * out_len);
     conv1d_forward_stream(&rb->conv2, tmp2, T, tmp);
 
-    for (int i = 0; i < dim * out_len; i++) x[i] += tmp[i];
+    ptts_add_inplace(x, tmp, dim * out_len);
 
     free(tmp); free(tmp2);
 }
 
 static void linear_forward(const float *w, const float *b, int out, int in,
                            const float *x, int n, float *y) {
-    for (int t = 0; t < n; t++) {
-        const float *xrow = x + t * in;
-        float *yrow = y + t * out;
-        for (int o = 0; o < out; o++) {
-            const float *wrow = w + o * in;
-            float sum = b ? b[o] : 0.0f;
-            for (int i = 0; i < in; i++) sum += wrow[i] * xrow[i];
-            yrow[o] = sum;
-        }
-    }
+    ptts_linear_forward(y, x, w, b, n, in, out);
 }
 
 static void layernorm_forward(const float *x, int n, int d,
@@ -347,6 +284,8 @@ static int transformer_forward(const ptts_mimi *mm, float *x, int T) {
     int d = MIMI_D_MODEL;
     int h = MIMI_NUM_HEADS;
     int hd = MIMI_HEAD_DIM;
+    double t_start = 0.0;
+    if (ptts_timing_enabled()) t_start = ptts_time_ms();
 
     float *x_norm = (float *)malloc((size_t)T * d * sizeof(float));
     float *qkv = (float *)malloc((size_t)T * d * 3 * sizeof(float));
@@ -407,6 +346,11 @@ static int transformer_forward(const ptts_mimi *mm, float *x, int T) {
             if (layer->ls2) add *= layer->ls2[i % d];
             x[i] += add;
         }
+    }
+
+    if (ptts_timing_enabled()) {
+        double t_end = ptts_time_ms();
+        fprintf(stderr, "[ptts] Mimi transformer: %.2f ms (T=%d)\n", t_end - t_start, T);
     }
 
     free(x_norm); free(qkv); free(q); free(k); free(v); free(attn); free(attn_out); free(ff1); free(ff2);
@@ -646,6 +590,65 @@ int ptts_mimi_decode(ptts_mimi *mm, const float *latents, int frames,
     free(up_t);
 
     /* decoder conv stack */
+#ifdef PTTS_USE_CUDA
+    {
+        double t_start = 0.0;
+        ptts_cuda_conv1d_desc dec_in = {
+            mm->dec_in.w, mm->dec_in.b, mm->dec_in.in_ch, mm->dec_in.out_ch,
+            mm->dec_in.k, mm->dec_in.stride, mm->dec_in.groups};
+        ptts_cuda_convtr1d_desc up0 = {
+            mm->up[0].w, mm->up[0].b, mm->up[0].in_ch, mm->up[0].out_ch,
+            mm->up[0].k, mm->up[0].stride, mm->up[0].groups};
+        ptts_cuda_conv1d_desc res0_1 = {
+            mm->res[0].conv1.w, mm->res[0].conv1.b, mm->res[0].conv1.in_ch,
+            mm->res[0].conv1.out_ch, mm->res[0].conv1.k, mm->res[0].conv1.stride,
+            mm->res[0].conv1.groups};
+        ptts_cuda_conv1d_desc res0_2 = {
+            mm->res[0].conv2.w, mm->res[0].conv2.b, mm->res[0].conv2.in_ch,
+            mm->res[0].conv2.out_ch, mm->res[0].conv2.k, mm->res[0].conv2.stride,
+            mm->res[0].conv2.groups};
+        ptts_cuda_convtr1d_desc up1 = {
+            mm->up[1].w, mm->up[1].b, mm->up[1].in_ch, mm->up[1].out_ch,
+            mm->up[1].k, mm->up[1].stride, mm->up[1].groups};
+        ptts_cuda_conv1d_desc res1_1 = {
+            mm->res[1].conv1.w, mm->res[1].conv1.b, mm->res[1].conv1.in_ch,
+            mm->res[1].conv1.out_ch, mm->res[1].conv1.k, mm->res[1].conv1.stride,
+            mm->res[1].conv1.groups};
+        ptts_cuda_conv1d_desc res1_2 = {
+            mm->res[1].conv2.w, mm->res[1].conv2.b, mm->res[1].conv2.in_ch,
+            mm->res[1].conv2.out_ch, mm->res[1].conv2.k, mm->res[1].conv2.stride,
+            mm->res[1].conv2.groups};
+        ptts_cuda_convtr1d_desc up2 = {
+            mm->up[2].w, mm->up[2].b, mm->up[2].in_ch, mm->up[2].out_ch,
+            mm->up[2].k, mm->up[2].stride, mm->up[2].groups};
+        ptts_cuda_conv1d_desc res2_1 = {
+            mm->res[2].conv1.w, mm->res[2].conv1.b, mm->res[2].conv1.in_ch,
+            mm->res[2].conv1.out_ch, mm->res[2].conv1.k, mm->res[2].conv1.stride,
+            mm->res[2].conv1.groups};
+        ptts_cuda_conv1d_desc res2_2 = {
+            mm->res[2].conv2.w, mm->res[2].conv2.b, mm->res[2].conv2.in_ch,
+            mm->res[2].conv2.out_ch, mm->res[2].conv2.k, mm->res[2].conv2.stride,
+            mm->res[2].conv2.groups};
+        ptts_cuda_conv1d_desc dec_out = {
+            mm->dec_out.w, mm->dec_out.b, mm->dec_out.in_ch, mm->dec_out.out_ch,
+            mm->dec_out.k, mm->dec_out.stride, mm->dec_out.groups};
+        int cuda_len = 0;
+        if (ptts_timing_enabled()) t_start = ptts_time_ms();
+        if (ptts_cuda_mimi_convstack(&dec_in, &up0, &res0_1, &res0_2,
+                                     &up1, &res1_1, &res1_2,
+                                     &up2, &res2_1, &res2_2,
+                                     &dec_out, up, up_len, out_audio, &cuda_len) == 0) {
+            if (ptts_timing_enabled()) {
+                double t_end = ptts_time_ms();
+                fprintf(stderr, "[ptts] Mimi conv stack (CUDA): %.2f ms\n", t_end - t_start);
+            }
+            *out_len = cuda_len;
+            free(up);
+            return 0;
+        }
+    }
+#endif
+
     float *x = up;
     int T = up_len;
 

@@ -13,4 +13,7 @@ struct ptts_ctx {
     int sample_rate;
 };
 
+int ptts_timing_enabled(void);
+double ptts_time_ms(void);
+
 #endif /* PTTS_INTERNAL_H */

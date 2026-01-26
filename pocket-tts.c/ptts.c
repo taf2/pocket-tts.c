@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
 
 #ifndef M_PI
@@ -20,9 +21,26 @@
  * ======================================================================== */
 
 static char g_error_msg[256] = {0};
+static int g_timing_inited = 0;
+static int g_timing_enabled = 0;
 
 const char *ptts_get_error(void) {
     return g_error_msg;
+}
+
+int ptts_timing_enabled(void) {
+    if (!g_timing_inited) {
+        const char *v = getenv("PTTS_TIMING");
+        g_timing_enabled = (v && v[0] && strcmp(v, "0") != 0);
+        g_timing_inited = 1;
+    }
+    return g_timing_enabled;
+}
+
+double ptts_time_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 }
 
 static void set_error(const char *msg) {
@@ -1060,6 +1078,8 @@ ptts_audio *ptts_generate(ptts_ctx *ctx, const char *text,
     }
 
     int used_frames = 0;
+    double t_start = 0.0;
+    if (ptts_timing_enabled()) t_start = ptts_time_ms();
     if (ptts_flowlm_generate_latents(fm, ids, n, voice_cond, voice_len,
                                      p.num_frames, p.num_steps, p.temp, p.noise_clamp,
                                      p.seed, p.eos_enabled, p.eos_threshold, p.eos_min_frames,
@@ -1071,6 +1091,11 @@ ptts_audio *ptts_generate(ptts_ctx *ctx, const char *text,
         free(ids);
         set_error("FlowLM forward failed");
         return NULL;
+    }
+    if (ptts_timing_enabled()) {
+        double t_end = ptts_time_ms();
+        fprintf(stderr, "[ptts] FlowLM latents: %.2f ms (%d frames)\n",
+                t_end - t_start, used_frames);
     }
 
     float *scaled = (float *)malloc(sizeof(float) * 32 * (size_t)used_frames);
@@ -1099,6 +1124,7 @@ ptts_audio *ptts_generate(ptts_ctx *ctx, const char *text,
     }
 
     int wav_len = 0;
+    if (ptts_timing_enabled()) t_start = ptts_time_ms();
     if (ptts_mimi_decode(mm, scaled, used_frames, audio->samples, &wav_len) != 0) {
         ptts_audio_free(audio);
         free(scaled);
@@ -1109,6 +1135,10 @@ ptts_audio *ptts_generate(ptts_ctx *ctx, const char *text,
         free(ids);
         set_error("Mimi decode failed");
         return NULL;
+    }
+    if (ptts_timing_enabled()) {
+        double t_end = ptts_time_ms();
+        fprintf(stderr, "[ptts] Mimi decode: %.2f ms\n", t_end - t_start);
     }
     if (wav_len != total_samples) {
         ptts_audio_free(audio);

@@ -11,6 +11,10 @@ Use `--dummy` for placeholder audio. Generation defaults to an auto frame length
 ```bash
 # Build
 make generic
+# or: make blas  # OpenBLAS accelerated
+# or: make cuda  # NVIDIA CUDA + cuBLAS + NVRTC
+
+CUDA builds require the CUDA toolkit + cuBLAS + NVRTC.
 
 # Download model weights + default voice embedding (see note about HF access below)
 ./download_model.sh --voice alba
@@ -109,6 +113,8 @@ Use `./download_model.sh --voice alba` or pass `--voice none` to disable conditi
 
 ```bash
 make generic
+# or: make blas
+# or: make cuda
 ```
 
 ## Roadmap (high level)

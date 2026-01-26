@@ -1,5 +1,6 @@
 #include "ptts_flowlm.h"
 #include "ptts_internal.h"
+#include "ptts_kernels.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,18 +131,7 @@ static void free_ptr(float **p) {
 
 static void linear_forward(const float *w, const float *b, int out, int in,
                            const float *x, int n, float *y) {
-    for (int t = 0; t < n; t++) {
-        const float *xrow = x + t * in;
-        float *yrow = y + t * out;
-        for (int o = 0; o < out; o++) {
-            const float *wrow = w + o * in;
-            float sum = b ? b[o] : 0.0f;
-            for (int i = 0; i < in; i++) {
-                sum += wrow[i] * xrow[i];
-            }
-            yrow[o] = sum;
-        }
-    }
+    ptts_linear_forward(y, x, w, b, n, in, out);
 }
 
 static void layernorm_forward(const float *x, int n, int d,
