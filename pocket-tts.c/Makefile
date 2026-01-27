@@ -14,14 +14,14 @@ MAIN = main.c
 TARGET = ptts
 LIB = libptts.a
 
-.PHONY: all clean help generic lib info test blas cuda
+.PHONY: all clean help cpu lib info test blas cuda
 
 all: help
 
 help:
 	@echo "Pocket-TTS Pure C (WIP) - Build Targets"
 	@echo ""
-	@echo "  make generic  - Pure C, no dependencies"
+	@echo "  make cpu      - Pure C, no dependencies"
 	@echo "  make blas     - OpenBLAS accelerated"
 	@echo "  make cuda     - NVIDIA CUDA + cuBLAS accelerated"
 	@echo ""
@@ -31,15 +31,15 @@ help:
 	@echo "  make lib      - Build static library"
 	@echo "  make test     - Run hello world regression test"
 	@echo ""
-	@echo "Example: make generic && ./ptts --dummy -p \"hello\" -o out.wav"
+	@echo "Example: make cpu && ./ptts --dummy -p \"hello\" -o out.wav"
 
 # =============================================================================
-# Backend: generic (pure C, no deps)
+# Backend: cpu (pure C, no deps)
 # =============================================================================
-generic: CFLAGS = $(CFLAGS_BASE) -DGENERIC_BUILD
-generic: clean $(TARGET)
+cpu: CFLAGS = $(CFLAGS_BASE) -DCPU_BUILD
+cpu: clean $(TARGET)
 	@echo ""
-	@echo "Built with GENERIC backend (pure C)"
+	@echo "Built with CPU backend (pure C)"
 
 # =============================================================================
 # Backend: BLAS (OpenBLAS)
@@ -86,7 +86,7 @@ info:
 	@echo "Compiler: $(CC)"
 	@echo "CFLAGS:   $(CFLAGS_BASE)"
 
-test: generic
+test: cpu
 	@PY=python3; \
 	if [ -x ./env-syss/bin/python ]; then PY=./env-syss/bin/python; fi; \
 	REF=../pocket-tts-hello-world.wav; \
