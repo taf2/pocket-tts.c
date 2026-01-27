@@ -477,8 +477,6 @@ static int transformer_forward_step_cached(const ptts_flowlm *fm, ptts_flowlm_kv
                 }
             }
         }
-#else
-        int validate = 0;
 #endif
 
         if (!use_gpu) {

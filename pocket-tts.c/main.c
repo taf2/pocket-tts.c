@@ -24,34 +24,42 @@ static output_level_t output_level = OUTPUT_NORMAL;
 static void print_usage(const char *prog) {
     printf("Pocket-TTS Pure C (WIP)\n");
     printf("Usage: %s -d model_dir -p \"text\" -o out.wav [options]\n", prog);
-    printf("\nOptions:\n");
+    printf("\nPrimary:\n");
     printf("  -d, --dir PATH        Model directory or .safetensors file\n");
     printf("  -p, --prompt TEXT     Text to synthesize\n");
     printf("  -o, --output PATH     Output WAV path\n");
     printf("      --voice NAME      Voice embedding name or .safetensors path (default: alba)\n");
+    printf("\nIntrospection:\n");
     printf("      --info            Print model info\n");
     printf("      --list            List tensors in weights file\n");
     printf("      --find TEXT       List tensors whose names contain TEXT\n");
     printf("      --verify          Verify weights against expected shapes\n");
     printf("      --tokens          Print token IDs for the prompt\n");
+    printf("\nDebug/analysis:\n");
     printf("      --flow-test       Run a single FlowLM step and print latent stats\n");
     printf("      --mimi-test       Run FlowLM + Mimi decoder transformer stats\n");
     printf("      --mimi-wave PATH  Write Mimi decode WAV to PATH (frames * 80ms)\n");
     printf("      --frames N        Number of FlowLM/Mimi frames (default: auto)\n");
+    printf("      --latent-out PATH Write raw FlowLM latents (32 floats per frame)\n");
     printf("      --cond-out PATH   Write first FlowLM condition vector (1024 floats)\n");
     printf("      --flow-out PATH   Write first FlowLM flow vector (32 floats)\n");
     printf("      --dummy           Generate placeholder audio (no model)\n");
-    printf("  -r, --rate N          Sample rate for dummy generator (default: 24000)\n");
-    printf("  -s, --steps N         Flow matching steps (placeholder)\n");
+    printf("\nGeneration:\n");
     printf("  -S, --seed N          Random seed (-1 for random)\n");
     printf("  -t, --temp F          Noise temperature for FlowLM (default: 1.0)\n");
     printf("      --noise-clamp F   Clamp noise to [-F, F] (default: 0, off)\n");
     printf("      --eos-threshold F Stop early if eos_logit >= F (default: -4.0)\n");
     printf("      --eos-min-frames N Minimum frames before EOS stop (default: 1)\n");
-    printf("      --eos-after N    Frames to keep after EOS (default: auto)\n");
+    printf("      --eos-after N     Frames to keep after EOS (default: auto)\n");
+    printf("  -r, --rate N          Sample rate for dummy generator (default: 24000)\n");
+    printf("  -s, --steps N         Flow matching steps (placeholder)\n");
+    printf("\nOutput:\n");
     printf("  -q, --quiet           Less output\n");
     printf("  -v, --verbose         More output\n");
     printf("  -h, --help            Show help\n");
+    printf("\nExamples:\n");
+    printf("  %s -d pocket-tts-model -p \"Hello world\" -o out.wav --voice alba\n", prog);
+    printf("  %s --list -d pocket-tts-model\n", prog);
 }
 
 #define LOG_NORMAL(...) do { if (output_level >= OUTPUT_NORMAL) fprintf(stderr, __VA_ARGS__); } while(0)

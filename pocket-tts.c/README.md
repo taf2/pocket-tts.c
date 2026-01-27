@@ -3,14 +3,14 @@
 A minimal, dependency-free C scaffold for a Pocket-TTS port, following the style of `flux2.c`.
 The goal is a small, pure-C TTS engine that loads Pocket-TTS weights and runs on CPU.
 
-**Status:** model loading + FlowLM/Mimi paths are wired; voice conditioning is required for intelligible output.
-Use `--dummy` for placeholder audio. Generation defaults to an auto frame length + EOS stop.
+**Status:** end-to-end TTS works (FlowLM + Mimi). CUDA path is validated and fast. CLI and tests are
+kept small in the `flux2.c` spirit.
 
 ## Quick Start
 
 ```bash
 # Build
-make generic
+make cpu
 # or: make blas  # OpenBLAS accelerated
 # or: make cuda  # NVIDIA CUDA + cuBLAS + NVRTC
 
@@ -22,8 +22,8 @@ CUDA builds require the CUDA toolkit + cuBLAS + NVRTC.
 # List tensors in the weights file
 ./ptts -d pocket-tts-model --list
 
-# Generate a placeholder WAV (debug only)
-./ptts --dummy -p "hello world" -o out.wav
+# Generate speech
+./ptts -d pocket-tts-model -p "Hello world" -o out.wav --voice alba
 ```
 
 ## Features
@@ -54,6 +54,8 @@ Options:
     --mimi-wave PATH  Write Mimi decode WAV to PATH (frames * 80ms)
     --frames N        Number of FlowLM/Mimi frames (affects --mimi-wave and -o, default: auto)
     --latent-out PATH Write raw FlowLM latents (float32, 32 values per frame) to PATH
+    --cond-out PATH   Write first FlowLM condition vector (1024 floats)
+    --flow-out PATH   Write first FlowLM flow vector (32 floats)
     --voice NAME      Voice embedding name or .safetensors path (default: alba)
     --dummy           Generate placeholder audio (no model)
 -r, --rate N          Sample rate for dummy generator (default: 24000)
@@ -101,6 +103,17 @@ There is a small helper to compare C latents against the Python reference:
 python3 tools/flowlm_parity.py --text "Hello world" --frames 1 --temp 0
 ```
 
+## Tests (Golden Regression)
+
+`make test` runs a deterministic “Hello world!” golden test against a reference WAV.
+Set `PTTS_HELLO_REF` if your reference file lives elsewhere.
+
+```bash
+make test
+# or:
+PTTS_HELLO_REF=/path/to/hello.wav make test
+```
+
 ## Model Download Notes
 
 Pocket-TTS weights are hosted on Hugging Face and may require accepting model terms.
@@ -112,9 +125,16 @@ Use `./download_model.sh --voice alba` or pass `--voice none` to disable conditi
 ## Build
 
 ```bash
-make generic
+make cpu
 # or: make blas
 # or: make cuda
+```
+
+CUDA diagnostics:
+
+```bash
+make cuda-validate-test
+make cuda-sanitize
 ```
 
 ## Roadmap (high level)

@@ -604,9 +604,8 @@ int ptts_mimi_decode(ptts_mimi *mm, const float *latents, int frames,
     free(up_t);
 
     /* decoder conv stack */
-#ifdef PTTS_USE_CUDA
-    {
-        if (!cuda_conv_enabled()) goto cpu_conv;
+ #ifdef PTTS_USE_CUDA
+    if (cuda_conv_enabled()) {
         double t_start = 0.0;
         int timing = ptts_timing_enabled();
         ptts_cuda_conv1d_desc dec_in = {
@@ -670,7 +669,6 @@ int ptts_mimi_decode(ptts_mimi *mm, const float *latents, int frames,
     }
 #endif
 
-cpu_conv:
     float *x = up;
     int T = up_len;
 

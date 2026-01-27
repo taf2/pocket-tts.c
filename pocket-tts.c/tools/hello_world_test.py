@@ -179,7 +179,11 @@ def main() -> int:
     if temp_path:
         os.unlink(temp_path)
 
-    return 0 if ok else 1
+    if ok:
+        print("  PASS")
+        return 0
+    print("  FAIL")
+    return 1
 
 
 if __name__ == "__main__":
