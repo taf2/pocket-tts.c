@@ -26,6 +26,17 @@ CUDA builds require the CUDA toolkit + cuBLAS + NVRTC.
 ./ptts -d pocket-tts-model -p "Hello world" -o out.wav --voice alba
 ```
 
+## Sample Audio
+
+Included: `sample.wav`
+
+Play it:
+
+```bash
+afplay sample.wav   # macOS
+aplay sample.wav    # Linux
+```
+
 ## Features
 
 - Pure C, no external runtime dependencies
