@@ -30,7 +30,11 @@ CUDA builds require the CUDA toolkit + cuBLAS + NVRTC.
 
 Included: `sample.wav`
 
-Play it:
+Play it inline (GitHub supports `<audio>`):
+
+<audio controls src="sample.wav"></audio>
+
+Or locally:
 
 ```bash
 afplay sample.wav   # macOS
