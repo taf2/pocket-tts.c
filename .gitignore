@@ -1,5 +1,5 @@
 *.o
 flux2.c
 pocket-tts
-pocket-tts.c/ptts
-pocket-tts.c/pocket-tts-model/
+ptts
+pocket-tts-model/
