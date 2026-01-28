@@ -312,4 +312,109 @@ static void submit_if_not_batch(id<MTLCommandBuffer> cmd) {
     }
 }
 
+// ============================================================================
+// Linear layer: y = x @ W^T + b
+// ============================================================================
+
+int ptts_mps_linear_forward(float *y, const float *x, const float *w,
+                            const float *b, int n, int in_features, int out_features) {
+    @autoreleasepool {
+        if (!ptts_mps_available()) return -1;
+
+        // For small matrices, use Accelerate (CPU BLAS) - less overhead
+        if (n * in_features < 4096) {
+            // y = x @ W^T using cblas_sgemm
+            // C = alpha * A * B^T + beta * C
+            // A: [n, in], B: [out, in], C: [n, out]
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                        n, out_features, in_features,
+                        1.0f, x, in_features,
+                        w, in_features,
+                        0.0f, y, out_features);
+
+            // Add bias
+            if (b) {
+                for (int i = 0; i < n; i++) {
+                    for (int j = 0; j < out_features; j++) {
+                        y[i * out_features + j] += b[j];
+                    }
+                }
+            }
+            return 0;
+        }
+
+        // For larger matrices, use MPS
+        size_t x_size = n * in_features * sizeof(float);
+        size_t w_size = out_features * in_features * sizeof(float);
+        size_t y_size = n * out_features * sizeof(float);
+
+        // Get or create GPU buffers
+        id<MTLBuffer> x_buf = [g_device newBufferWithBytes:x length:x_size
+                                                   options:MTLResourceStorageModeShared];
+        id<MTLBuffer> w_buf = get_cached_buffer(w, w_size);
+        id<MTLBuffer> y_buf = pool_get_buffer(y_size);
+
+        if (!x_buf || !w_buf || !y_buf) {
+            return -1;
+        }
+
+        // Create matrix descriptors
+        // x: [n, in_features] - row major
+        MPSMatrixDescriptor *x_desc = [MPSMatrixDescriptor
+            matrixDescriptorWithRows:n
+                             columns:in_features
+                            rowBytes:in_features * sizeof(float)
+                            dataType:MPSDataTypeFloat32];
+
+        // w: [out_features, in_features] - will be transposed
+        MPSMatrixDescriptor *w_desc = [MPSMatrixDescriptor
+            matrixDescriptorWithRows:out_features
+                             columns:in_features
+                            rowBytes:in_features * sizeof(float)
+                            dataType:MPSDataTypeFloat32];
+
+        // y: [n, out_features]
+        MPSMatrixDescriptor *y_desc = [MPSMatrixDescriptor
+            matrixDescriptorWithRows:n
+                             columns:out_features
+                            rowBytes:out_features * sizeof(float)
+                            dataType:MPSDataTypeFloat32];
+
+        MPSMatrix *x_mat = [[MPSMatrix alloc] initWithBuffer:x_buf descriptor:x_desc];
+        MPSMatrix *w_mat = [[MPSMatrix alloc] initWithBuffer:w_buf descriptor:w_desc];
+        MPSMatrix *y_mat = [[MPSMatrix alloc] initWithBuffer:y_buf descriptor:y_desc];
+
+        // Create matrix multiplication: y = x @ w^T
+        MPSMatrixMultiplication *matmul = [[MPSMatrixMultiplication alloc]
+            initWithDevice:g_device
+               transposeLeft:NO
+              transposeRight:YES
+                  resultRows:n
+               resultColumns:out_features
+             interiorColumns:in_features
+                       alpha:1.0
+                        beta:0.0];
+
+        // Execute
+        id<MTLCommandBuffer> cmd = get_command_buffer();
+        [matmul encodeToCommandBuffer:cmd leftMatrix:x_mat rightMatrix:w_mat resultMatrix:y_mat];
+        submit_if_not_batch(cmd);
+
+        // Copy result back
+        memcpy(y, [y_buf contents], y_size);
+
+        // Add bias (on CPU for now, could be GPU kernel)
+        if (b) {
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < out_features; j++) {
+                    y[i * out_features + j] += b[j];
+                }
+            }
+        }
+
+        pool_release_buffer(y_buf);
+        return 0;
+    }
+}
+
 #endif // PTTS_USE_MPS
