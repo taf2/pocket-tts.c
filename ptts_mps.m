@@ -417,4 +417,154 @@ int ptts_mps_linear_forward(float *y, const float *x, const float *w,
     }
 }
 
+// ============================================================================
+// Activation functions
+// ============================================================================
+
+int ptts_mps_elu_forward(float *x, int n, float alpha) {
+    @autoreleasepool {
+        if (!ptts_mps_available() || !g_elu_pipeline) return -1;
+
+        size_t size = n * sizeof(float);
+        id<MTLBuffer> buf = [g_device newBufferWithBytes:x length:size
+                                                 options:MTLResourceStorageModeShared];
+        if (!buf) return -1;
+
+        id<MTLCommandBuffer> cmd = get_command_buffer();
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+
+        [encoder setComputePipelineState:g_elu_pipeline];
+        [encoder setBuffer:buf offset:0 atIndex:0];
+        [encoder setBytes:&alpha length:sizeof(float) atIndex:1];
+
+        MTLSize gridSize = MTLSizeMake(n, 1, 1);
+        NSUInteger threadGroupSize = MIN(256, g_elu_pipeline.maxTotalThreadsPerThreadgroup);
+        MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
+
+        [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+        [encoder endEncoding];
+
+        submit_if_not_batch(cmd);
+        memcpy(x, [buf contents], size);
+
+        return 0;
+    }
+}
+
+int ptts_mps_silu_forward(float *x, int n) {
+    @autoreleasepool {
+        if (!ptts_mps_available() || !g_silu_pipeline) return -1;
+
+        size_t size = n * sizeof(float);
+        id<MTLBuffer> buf = [g_device newBufferWithBytes:x length:size
+                                                 options:MTLResourceStorageModeShared];
+        if (!buf) return -1;
+
+        id<MTLCommandBuffer> cmd = get_command_buffer();
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+
+        [encoder setComputePipelineState:g_silu_pipeline];
+        [encoder setBuffer:buf offset:0 atIndex:0];
+
+        MTLSize gridSize = MTLSizeMake(n, 1, 1);
+        NSUInteger threadGroupSize = MIN(256, g_silu_pipeline.maxTotalThreadsPerThreadgroup);
+        MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
+
+        [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+        [encoder endEncoding];
+
+        submit_if_not_batch(cmd);
+        memcpy(x, [buf contents], size);
+
+        return 0;
+    }
+}
+
+// ============================================================================
+// Normalization layers
+// ============================================================================
+
+int ptts_mps_layernorm_forward(float *y, const float *x, const float *gamma,
+                               const float *beta, int n, int d, float eps) {
+    @autoreleasepool {
+        if (!ptts_mps_available() || !g_layernorm_pipeline) return -1;
+
+        size_t x_size = n * d * sizeof(float);
+        size_t param_size = d * sizeof(float);
+
+        id<MTLBuffer> x_buf = [g_device newBufferWithBytes:x length:x_size
+                                                   options:MTLResourceStorageModeShared];
+        id<MTLBuffer> y_buf = pool_get_buffer(x_size);
+        id<MTLBuffer> gamma_buf = get_cached_buffer(gamma, param_size);
+        id<MTLBuffer> beta_buf = get_cached_buffer(beta, param_size);
+
+        if (!x_buf || !y_buf || !gamma_buf || !beta_buf) return -1;
+
+        id<MTLCommandBuffer> cmd = get_command_buffer();
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+
+        [encoder setComputePipelineState:g_layernorm_pipeline];
+        [encoder setBuffer:x_buf offset:0 atIndex:0];
+        [encoder setBuffer:y_buf offset:0 atIndex:1];
+        [encoder setBuffer:gamma_buf offset:0 atIndex:2];
+        [encoder setBuffer:beta_buf offset:0 atIndex:3];
+        [encoder setBytes:&d length:sizeof(int) atIndex:4];
+        [encoder setBytes:&eps length:sizeof(float) atIndex:5];
+
+        // One threadgroup per row
+        MTLSize gridSize = MTLSizeMake(1, n, 1);
+        NSUInteger tgSize = MIN(256, g_layernorm_pipeline.maxTotalThreadsPerThreadgroup);
+        MTLSize threadgroupSize = MTLSizeMake(tgSize, 1, 1);
+
+        [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadgroupSize];
+        [encoder endEncoding];
+
+        submit_if_not_batch(cmd);
+        memcpy(y, [y_buf contents], x_size);
+        pool_release_buffer(y_buf);
+
+        return 0;
+    }
+}
+
+int ptts_mps_rmsnorm_forward(float *y, const float *x, const float *gamma,
+                             int n, int d, float eps) {
+    @autoreleasepool {
+        if (!ptts_mps_available() || !g_rmsnorm_pipeline) return -1;
+
+        size_t x_size = n * d * sizeof(float);
+        size_t param_size = d * sizeof(float);
+
+        id<MTLBuffer> x_buf = [g_device newBufferWithBytes:x length:x_size
+                                                   options:MTLResourceStorageModeShared];
+        id<MTLBuffer> y_buf = pool_get_buffer(x_size);
+        id<MTLBuffer> gamma_buf = get_cached_buffer(gamma, param_size);
+
+        if (!x_buf || !y_buf || !gamma_buf) return -1;
+
+        id<MTLCommandBuffer> cmd = get_command_buffer();
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+
+        [encoder setComputePipelineState:g_rmsnorm_pipeline];
+        [encoder setBuffer:x_buf offset:0 atIndex:0];
+        [encoder setBuffer:y_buf offset:0 atIndex:1];
+        [encoder setBuffer:gamma_buf offset:0 atIndex:2];
+        [encoder setBytes:&d length:sizeof(int) atIndex:3];
+        [encoder setBytes:&eps length:sizeof(float) atIndex:4];
+
+        MTLSize gridSize = MTLSizeMake(1, n, 1);
+        NSUInteger tgSize = MIN(256, g_rmsnorm_pipeline.maxTotalThreadsPerThreadgroup);
+        MTLSize threadgroupSize = MTLSizeMake(tgSize, 1, 1);
+
+        [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadgroupSize];
+        [encoder endEncoding];
+
+        submit_if_not_batch(cmd);
+        memcpy(y, [y_buf contents], x_size);
+        pool_release_buffer(y_buf);
+
+        return 0;
+    }
+}
+
 #endif // PTTS_USE_MPS
