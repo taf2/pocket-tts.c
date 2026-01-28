@@ -679,7 +679,9 @@ int ptts_mps_conv1d_forward(float *y, const float *x, const float *w, const floa
     @autoreleasepool {
         if (!ptts_mps_available() || !g_conv1d_pipeline) return -1;
 
-        int out_len = (T - k) / stride + 1;
+        // Match CPU implementation: out_len = T / stride with left_pad = k - stride
+        int out_len = T / stride;
+        int left_pad = k - stride;
         if (out_len <= 0) return -1;
 
         size_t x_size = in_ch * T * sizeof(float);
@@ -720,6 +722,7 @@ int ptts_mps_conv1d_forward(float *y, const float *x, const float *w, const floa
         [encoder setBytes:&groups length:sizeof(int) atIndex:9];
         [encoder setBytes:&out_len length:sizeof(int) atIndex:10];
         [encoder setBytes:&has_bias length:sizeof(int) atIndex:11];
+        [encoder setBytes:&left_pad length:sizeof(int) atIndex:12];
 
         MTLSize gridSize = MTLSizeMake(out_len, out_ch, 1);
         MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);
@@ -739,7 +742,9 @@ int ptts_mps_convtr1d_forward(float *y, const float *x, const float *w, const fl
     @autoreleasepool {
         if (!ptts_mps_available() || !g_convtr1d_pipeline) return -1;
 
-        int out_len = (T - 1) * stride + k;
+        // Match CPU implementation: full_len - (k - stride)
+        int full_len = (T - 1) * stride + k;
+        int out_len = full_len - (k - stride);
 
         size_t x_size = in_ch * T * sizeof(float);
         size_t w_size = in_ch * (out_ch / groups) * k * sizeof(float);

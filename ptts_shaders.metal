@@ -222,7 +222,8 @@ kernel void attn_apply_kernel(device const float *scores [[buffer(0)]],
 // Convolution kernels
 // ============================================================================
 
-// Conv1d: y[c_out, t_out] = sum over c_in, k of x[c_in, t*stride+k] * w[c_out, c_in, k]
+// Conv1d: y[c_out, t_out] = sum over c_in, k of x[c_in, t*stride-left_pad+k] * w[c_out, c_in, k]
+// With left padding: left_pad = k - stride
 kernel void conv1d_kernel(device const float *x [[buffer(0)]],
                           device const float *w [[buffer(1)]],
                           device const float *b [[buffer(2)]],
@@ -235,6 +236,7 @@ kernel void conv1d_kernel(device const float *x [[buffer(0)]],
                           constant int &groups [[buffer(9)]],
                           constant int &out_len [[buffer(10)]],
                           constant int &has_bias [[buffer(11)]],
+                          constant int &left_pad [[buffer(12)]],
                           uint2 gid [[thread_position_in_grid]]) {
     uint oc = gid.y;  // output channel
     uint t = gid.x;   // output time position
@@ -245,11 +247,14 @@ kernel void conv1d_kernel(device const float *x [[buffer(0)]],
     int ch_per_group_out = out_ch / groups;
     int g = oc / ch_per_group_out;
 
+    // Match CPU: in_start = t * stride - left_pad
+    int in_start = int(t) * stride - left_pad;
+
     float sum = 0.0f;
     for (int ic = 0; ic < ch_per_group_in; ic++) {
         int ic_global = g * ch_per_group_in + ic;
         for (int ki = 0; ki < k; ki++) {
-            int t_in = int(t) * stride + ki;
+            int t_in = in_start + ki;
             if (t_in >= 0 && t_in < T) {
                 // x: [in_ch, T], w: [out_ch, ch_per_group_in, k]
                 float x_val = x[ic_global * T + t_in];
