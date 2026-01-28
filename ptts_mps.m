@@ -670,4 +670,139 @@ int ptts_mps_attention_forward(float *out, const float *Q, const float *K, const
     }
 }
 
+// ============================================================================
+// Convolution layers
+// ============================================================================
+
+int ptts_mps_conv1d_forward(float *y, const float *x, const float *w, const float *b,
+                            int in_ch, int out_ch, int T, int k, int stride, int groups) {
+    @autoreleasepool {
+        if (!ptts_mps_available() || !g_conv1d_pipeline) return -1;
+
+        int out_len = (T - k) / stride + 1;
+        if (out_len <= 0) return -1;
+
+        size_t x_size = in_ch * T * sizeof(float);
+        size_t w_size = out_ch * (in_ch / groups) * k * sizeof(float);
+        size_t b_size = out_ch * sizeof(float);
+        size_t y_size = out_ch * out_len * sizeof(float);
+
+        id<MTLBuffer> x_buf = [g_device newBufferWithBytes:x length:x_size
+                                                   options:MTLResourceStorageModeShared];
+        id<MTLBuffer> w_buf = get_cached_buffer(w, w_size);
+        id<MTLBuffer> b_buf = b ? get_cached_buffer(b, b_size) : nil;
+        id<MTLBuffer> y_buf = pool_get_buffer(y_size);
+
+        if (!x_buf || !w_buf || !y_buf) return -1;
+
+        // Create dummy bias buffer if no bias
+        if (!b_buf) {
+            float zero = 0.0f;
+            b_buf = [g_device newBufferWithBytes:&zero length:sizeof(float)
+                                         options:MTLResourceStorageModeShared];
+        }
+
+        int has_bias = b ? 1 : 0;
+
+        id<MTLCommandBuffer> cmd = get_command_buffer();
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+
+        [encoder setComputePipelineState:g_conv1d_pipeline];
+        [encoder setBuffer:x_buf offset:0 atIndex:0];
+        [encoder setBuffer:w_buf offset:0 atIndex:1];
+        [encoder setBuffer:b_buf offset:0 atIndex:2];
+        [encoder setBuffer:y_buf offset:0 atIndex:3];
+        [encoder setBytes:&in_ch length:sizeof(int) atIndex:4];
+        [encoder setBytes:&out_ch length:sizeof(int) atIndex:5];
+        [encoder setBytes:&T length:sizeof(int) atIndex:6];
+        [encoder setBytes:&k length:sizeof(int) atIndex:7];
+        [encoder setBytes:&stride length:sizeof(int) atIndex:8];
+        [encoder setBytes:&groups length:sizeof(int) atIndex:9];
+        [encoder setBytes:&out_len length:sizeof(int) atIndex:10];
+        [encoder setBytes:&has_bias length:sizeof(int) atIndex:11];
+
+        MTLSize gridSize = MTLSizeMake(out_len, out_ch, 1);
+        MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);
+        [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+        [encoder endEncoding];
+
+        submit_if_not_batch(cmd);
+        memcpy(y, [y_buf contents], y_size);
+        pool_release_buffer(y_buf);
+
+        return 0;
+    }
+}
+
+int ptts_mps_convtr1d_forward(float *y, const float *x, const float *w, const float *b,
+                              int in_ch, int out_ch, int T, int k, int stride, int groups) {
+    @autoreleasepool {
+        if (!ptts_mps_available() || !g_convtr1d_pipeline) return -1;
+
+        int out_len = (T - 1) * stride + k;
+
+        size_t x_size = in_ch * T * sizeof(float);
+        size_t w_size = in_ch * (out_ch / groups) * k * sizeof(float);
+        size_t b_size = out_ch * sizeof(float);
+        size_t y_size = out_ch * out_len * sizeof(float);
+
+        id<MTLBuffer> x_buf = [g_device newBufferWithBytes:x length:x_size
+                                                   options:MTLResourceStorageModeShared];
+        id<MTLBuffer> w_buf = get_cached_buffer(w, w_size);
+        id<MTLBuffer> b_buf = b ? get_cached_buffer(b, b_size) : nil;
+        id<MTLBuffer> y_buf = pool_get_buffer(y_size);
+
+        if (!x_buf || !w_buf || !y_buf) return -1;
+
+        if (!b_buf) {
+            float zero = 0.0f;
+            b_buf = [g_device newBufferWithBytes:&zero length:sizeof(float)
+                                         options:MTLResourceStorageModeShared];
+        }
+
+        int has_bias = b ? 1 : 0;
+
+        id<MTLCommandBuffer> cmd = get_command_buffer();
+        id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+
+        [encoder setComputePipelineState:g_convtr1d_pipeline];
+        [encoder setBuffer:x_buf offset:0 atIndex:0];
+        [encoder setBuffer:w_buf offset:0 atIndex:1];
+        [encoder setBuffer:b_buf offset:0 atIndex:2];
+        [encoder setBuffer:y_buf offset:0 atIndex:3];
+        [encoder setBytes:&in_ch length:sizeof(int) atIndex:4];
+        [encoder setBytes:&out_ch length:sizeof(int) atIndex:5];
+        [encoder setBytes:&T length:sizeof(int) atIndex:6];
+        [encoder setBytes:&k length:sizeof(int) atIndex:7];
+        [encoder setBytes:&stride length:sizeof(int) atIndex:8];
+        [encoder setBytes:&groups length:sizeof(int) atIndex:9];
+        [encoder setBytes:&out_len length:sizeof(int) atIndex:10];
+        [encoder setBytes:&has_bias length:sizeof(int) atIndex:11];
+
+        MTLSize gridSize = MTLSizeMake(out_len, out_ch, 1);
+        MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);
+        [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+        [encoder endEncoding];
+
+        submit_if_not_batch(cmd);
+        memcpy(y, [y_buf contents], y_size);
+        pool_release_buffer(y_buf);
+
+        return 0;
+    }
+}
+
+// ============================================================================
+// Fused operations
+// ============================================================================
+
+int ptts_mps_linear_silu_forward(float *y, const float *x, const float *w,
+                                 const float *b, int n, int in_features, int out_features) {
+    // Linear followed by SiLU
+    int ret = ptts_mps_linear_forward(y, x, w, b, n, in_features, out_features);
+    if (ret != 0) return ret;
+
+    return ptts_mps_silu_forward(y, n * out_features);
+}
+
 #endif // PTTS_USE_MPS
