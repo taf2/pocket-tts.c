@@ -43,6 +43,15 @@ cpu: clean $(TARGET)
 	@echo "Built with CPU backend (pure C)"
 
 # =============================================================================
+# Backend: cpu-opt (pure C + OpenMP)
+# =============================================================================
+cpu-opt: CFLAGS = $(CFLAGS_BASE) -DCPU_BUILD -fopenmp
+cpu-opt: LDFLAGS += -fopenmp
+cpu-opt: clean $(TARGET)
+	@echo ""
+	@echo "Built with CPU optimized backend (OpenMP)"
+
+# =============================================================================
 # Backend: BLAS (OpenBLAS)
 # =============================================================================
 blas: CFLAGS = $(CFLAGS_BASE) -DPTTS_USE_BLAS
