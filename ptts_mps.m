@@ -567,4 +567,107 @@ int ptts_mps_rmsnorm_forward(float *y, const float *x, const float *gamma,
     }
 }
 
+// ============================================================================
+// Attention: out = softmax(Q @ K^T / sqrt(d)) @ V
+// ============================================================================
+
+int ptts_mps_attention_forward(float *out, const float *Q, const float *K, const float *V,
+                               int n, int m, int heads, int d, int causal) {
+    @autoreleasepool {
+        if (!ptts_mps_available()) return -1;
+        if (!g_attn_scores_pipeline || !g_attn_softmax_pipeline || !g_attn_apply_pipeline) return -1;
+
+        // Process each head separately
+        size_t qkv_head_size = n * d * sizeof(float);  // Q: [n, d] per head
+        size_t kv_head_size = m * d * sizeof(float);   // K,V: [m, d] per head
+        size_t scores_size = n * m * sizeof(float);    // scores: [n, m] per head
+
+        float scale = 1.0f / sqrtf((float)d);
+
+        for (int h = 0; h < heads; h++) {
+            const float *Q_h = Q + h * n * d;
+            const float *K_h = K + h * m * d;
+            const float *V_h = V + h * m * d;
+            float *out_h = out + h * n * d;
+
+            // Create buffers
+            id<MTLBuffer> Q_buf = [g_device newBufferWithBytes:Q_h length:qkv_head_size
+                                                       options:MTLResourceStorageModeShared];
+            id<MTLBuffer> K_buf = [g_device newBufferWithBytes:K_h length:kv_head_size
+                                                       options:MTLResourceStorageModeShared];
+            id<MTLBuffer> V_buf = [g_device newBufferWithBytes:V_h length:kv_head_size
+                                                       options:MTLResourceStorageModeShared];
+            id<MTLBuffer> scores_buf = pool_get_buffer(scores_size);
+            id<MTLBuffer> out_buf = pool_get_buffer(qkv_head_size);
+
+            if (!Q_buf || !K_buf || !V_buf || !scores_buf || !out_buf) {
+                return -1;
+            }
+
+            id<MTLCommandBuffer> cmd = get_command_buffer();
+
+            // Phase 1: Compute attention scores
+            {
+                id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+                [encoder setComputePipelineState:g_attn_scores_pipeline];
+                [encoder setBuffer:Q_buf offset:0 atIndex:0];
+                [encoder setBuffer:K_buf offset:0 atIndex:1];
+                [encoder setBuffer:scores_buf offset:0 atIndex:2];
+                [encoder setBytes:&n length:sizeof(int) atIndex:3];
+                [encoder setBytes:&m length:sizeof(int) atIndex:4];
+                [encoder setBytes:&d length:sizeof(int) atIndex:5];
+                [encoder setBytes:&scale length:sizeof(float) atIndex:6];
+                [encoder setBytes:&causal length:sizeof(int) atIndex:7];
+
+                MTLSize gridSize = MTLSizeMake(m, n, 1);
+                MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);
+                [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+                [encoder endEncoding];
+            }
+
+            // Phase 2: Softmax (row-wise)
+            {
+                id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+                [encoder setComputePipelineState:g_attn_softmax_pipeline];
+                [encoder setBuffer:scores_buf offset:0 atIndex:0];
+                [encoder setBytes:&n length:sizeof(int) atIndex:1];
+                [encoder setBytes:&m length:sizeof(int) atIndex:2];
+
+                MTLSize gridSize = MTLSizeMake(1, n, 1);
+                NSUInteger tgSize = MIN(256, g_attn_softmax_pipeline.maxTotalThreadsPerThreadgroup);
+                MTLSize threadgroupSize = MTLSizeMake(tgSize, 1, 1);
+                [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadgroupSize];
+                [encoder endEncoding];
+            }
+
+            // Phase 3: Apply attention (scores @ V)
+            {
+                id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+                [encoder setComputePipelineState:g_attn_apply_pipeline];
+                [encoder setBuffer:scores_buf offset:0 atIndex:0];
+                [encoder setBuffer:V_buf offset:0 atIndex:1];
+                [encoder setBuffer:out_buf offset:0 atIndex:2];
+                [encoder setBytes:&n length:sizeof(int) atIndex:3];
+                [encoder setBytes:&m length:sizeof(int) atIndex:4];
+                [encoder setBytes:&d length:sizeof(int) atIndex:5];
+
+                MTLSize gridSize = MTLSizeMake(d, n, 1);
+                MTLSize threadgroupSize = MTLSizeMake(16, 16, 1);
+                [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+                [encoder endEncoding];
+            }
+
+            submit_if_not_batch(cmd);
+
+            // Copy result back
+            memcpy(out_h, [out_buf contents], qkv_head_size);
+
+            pool_release_buffer(scores_buf);
+            pool_release_buffer(out_buf);
+        }
+
+        return 0;
+    }
+}
+
 #endif // PTTS_USE_MPS
