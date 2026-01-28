@@ -14,7 +14,7 @@ MAIN = main.c
 TARGET = ptts
 LIB = libptts.a
 
-.PHONY: all clean help cpu lib info test blas cuda cuda-validate cuda-validate-test
+.PHONY: all clean help cpu lib info test blas cuda cuda-validate cuda-validate-test mps
 
 all: help
 
@@ -25,6 +25,7 @@ help:
 	@echo "  make blas     - OpenBLAS accelerated"
 	@echo "  make cuda     - NVIDIA CUDA + cuBLAS accelerated"
 	@echo "  make cuda-validate - CUDA build with layer-by-layer validator"
+	@echo "  make mps      - Metal Performance Shaders (Apple Silicon)"
 	@echo ""
 	@echo "Other targets:"
 	@echo "  make clean    - Remove build artifacts"
@@ -72,6 +73,29 @@ cuda-validate: clean $(CUDA_OBJS) main.o
 	@echo "Built with CUDA backend (cuBLAS + PTTS_CUDA_VALIDATE)"
 
 # =============================================================================
+# Backend: MPS (Apple Silicon - Metal Performance Shaders)
+# =============================================================================
+CFLAGS_MPS = $(CFLAGS_BASE) -DPTTS_USE_MPS -fobjc-arc
+LDFLAGS_MPS = -lm -framework Metal -framework MetalPerformanceShaders -framework Accelerate -framework Foundation
+
+# Object files for MPS build
+OBJS_MPS = $(filter-out ptts_cuda.o,$(OBJS)) ptts_mps.o
+
+ptts_mps.o: ptts_mps.m ptts_mps.h
+	$(CC) $(CFLAGS_MPS) -c ptts_mps.m -o ptts_mps.o
+
+mps: CFLAGS = $(CFLAGS_MPS)
+mps: clean $(OBJS_MPS) main.o
+	$(CC) $(CFLAGS_MPS) -o $(TARGET) $(OBJS_MPS) main.o $(LDFLAGS_MPS)
+	@echo "Built with MPS (Apple Silicon) support"
+
+# Compile Metal shaders (optional - can compile at runtime)
+ptts_shaders.metallib: ptts_shaders.metal
+	xcrun -sdk macosx metal -c ptts_shaders.metal -o ptts_shaders.air
+	xcrun -sdk macosx metallib ptts_shaders.air -o ptts_shaders.metallib
+	rm ptts_shaders.air
+
+# =============================================================================
 # Build rules
 # =============================================================================
 $(TARGET): $(OBJS) main.o
@@ -91,7 +115,7 @@ main.o: main.c ptts.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) ptts_cuda.o main.o $(TARGET) $(LIB)
+	rm -f $(OBJS) ptts_cuda.o ptts_mps.o main.o $(TARGET) $(LIB) ptts_shaders.air ptts_shaders.metallib
 
 info:
 	@echo "Compiler: $(CC)"
