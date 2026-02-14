@@ -11,8 +11,10 @@ kept small in the `flux2.c` spirit.
 ```bash
 # Build
 make cpu
+# or: make cpu-opt  # CPU + OpenMP acceleration
 # or: make blas  # OpenBLAS accelerated
 # or: make cuda  # NVIDIA CUDA + cuBLAS + NVRTC
+# or: make cuda-opt  # CUDA + cuBLAS + OpenMP CPU fallback
 
 CUDA builds require the CUDA toolkit + cuBLAS + NVRTC.
 
@@ -130,8 +132,10 @@ Use `./download_model.sh --voice alba` or pass `--voice none` to disable conditi
 
 ```bash
 make cpu
+# or: make cpu-opt
 # or: make blas
 # or: make cuda
+# or: make cuda-opt
 # or: make mps
 ```
 
