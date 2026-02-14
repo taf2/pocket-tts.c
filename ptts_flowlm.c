@@ -140,6 +140,22 @@ static void linear_forward(const float *w, const float *b, int out, int in,
     ptts_linear_forward(y, x, w, b, n, in, out);
 }
 
+#ifdef PTTS_USE_CUDA
+static void linear_forward_cpu(const float *w, const float *b, int out, int in,
+                               const float *x, int n, float *y) {
+    for (int t = 0; t < n; t++) {
+        const float *xrow = x + (size_t)t * in;
+        float *yrow = y + (size_t)t * out;
+        for (int o = 0; o < out; o++) {
+            const float *wrow = w + (size_t)o * in;
+            float sum = b ? b[o] : 0.0f;
+            for (int i = 0; i < in; i++) sum += wrow[i] * xrow[i];
+            yrow[o] = sum;
+        }
+    }
+}
+#endif
+
 static void layernorm_forward(const float *x, int n, int d,
                               const float *w, const float *b, float eps, float *y) {
     for (int t = 0; t < n; t++) {
@@ -307,10 +323,14 @@ static void attention_forward(const float *q, const float *k, const float *v,
 #endif
     float scale = 1.0f / sqrtf((float)D);
     int max_keys = T;
-    float *scores = (float *)malloc((size_t)max_keys * sizeof(float));
+    float *scores = (float *)malloc((size_t)H * (size_t)max_keys * sizeof(float));
     if (!scores) return;
 
+#ifdef _OPENMP
+    #pragma omp parallel for
+#endif
     for (int h = 0; h < H; h++) {
+        float *scores_h = scores + (size_t)h * max_keys;
         for (int tq = 0; tq < T; tq++) {
             int n_keys = tq + 1;
             const float *qvec = q + (tq * H + h) * D;
@@ -318,14 +338,14 @@ static void attention_forward(const float *q, const float *k, const float *v,
                 const float *kvec = k + (tk * H + h) * D;
                 float dot = 0.0f;
                 for (int d = 0; d < D; d++) dot += qvec[d] * kvec[d];
-                scores[tk] = dot * scale;
+                scores_h[tk] = dot * scale;
             }
-            softmax_inplace(scores, n_keys);
+            softmax_inplace(scores_h, n_keys);
             float *outvec = out + (tq * H + h) * D;
             for (int d = 0; d < D; d++) outvec[d] = 0.0f;
             for (int tk = 0; tk < n_keys; tk++) {
                 const float *vvec = v + (tk * H + h) * D;
-                float w = scores[tk];
+                float w = scores_h[tk];
                 for (int d = 0; d < D; d++) outvec[d] += w * vvec[d];
             }
         }
@@ -372,7 +392,7 @@ typedef struct {
     int seq_len;
     float *k_cache[FLOWLM_NUM_LAYERS];
     float *v_cache[FLOWLM_NUM_LAYERS];
-    float *scores;
+    float *scores; /* [FLOWLM_NUM_HEADS, max_len] */
 } ptts_flowlm_kv_cache;
 
 static void kv_cache_free(ptts_flowlm_kv_cache *cache);
@@ -391,7 +411,7 @@ static ptts_flowlm_kv_cache *kv_cache_create(int max_len) {
             return NULL;
         }
     }
-    cache->scores = (float *)malloc((size_t)max_len * sizeof(float));
+    cache->scores = (float *)malloc((size_t)FLOWLM_NUM_HEADS * (size_t)max_len * sizeof(float));
     if (!cache->scores) {
         kv_cache_free(cache);
         return NULL;
@@ -480,8 +500,11 @@ static int transformer_forward_step_cached(const ptts_flowlm *fm, ptts_flowlm_kv
 #endif
 
         if (!use_gpu) {
-            float *scores = cache->scores;
+#ifdef _OPENMP
+            #pragma omp parallel for
+#endif
             for (int hh = 0; hh < h; hh++) {
+                float *scores = cache->scores + (size_t)hh * cache->max_len;
                 float *out = attn_out + hh * hd;
                 int n_keys = pos + 1;
                 const float *qvec = q + hh * hd;
@@ -563,6 +586,24 @@ static void timestep_embed(const ptts_time_embed *te, float t, float *out) {
 }
 
 #ifdef PTTS_USE_CUDA
+static void timestep_embed_cpu(const ptts_time_embed *te, float t, float *out) {
+    float emb[256];
+    for (int i = 0; i < 128; i++) {
+        float freq = te->freqs ? te->freqs[i] : expf(-logf(FLOWLM_MAX_PERIOD) * ((float)i / 128.0f));
+        float angle = freq * t;
+        emb[i] = cosf(angle);
+        emb[i + 128] = sinf(angle);
+    }
+
+    float tmp[FLOWLM_FLOW_DIM];
+    linear_forward_cpu(te->lin0_w, te->lin0_b, FLOWLM_FLOW_DIM, 256, emb, 1, tmp);
+    silu_inplace(tmp, FLOWLM_FLOW_DIM);
+    linear_forward_cpu(te->lin2_w, te->lin2_b, FLOWLM_FLOW_DIM, FLOWLM_FLOW_DIM, tmp, 1, out);
+    rmsnorm_forward(out, FLOWLM_FLOW_DIM, te->rms_alpha, 1e-5f, out);
+}
+#endif
+
+#ifdef PTTS_USE_CUDA
 static int flow_cuda_enabled(void) {
     static int inited = 0;
     static int enabled = 1;
@@ -619,17 +660,18 @@ static void flow_net_forward(const ptts_flowlm *fm, const float *cond, float s, 
     float mlp[FLOWLM_FLOW_DIM];
     float ada[FLOWLM_FLOW_DIM * 3];
 
-    /* input projection */
-    linear_forward(fm->flow.input_w, fm->flow.input_b, FLOWLM_FLOW_DIM, FLOWLM_LATENT_DIM, x_in, 1, x);
-
     /* time embeddings */
     float ts[FLOWLM_FLOW_DIM];
     float tt[FLOWLM_FLOW_DIM];
-    timestep_embed(&fm->flow.time[0], s, ts);
-    timestep_embed(&fm->flow.time[1], t, tt);
 
 #ifdef PTTS_USE_CUDA
     if (flow_cuda_enabled()) {
+        /* Keep timestep embedding on CPU in CUDA FlowNet mode.
+         * Running these tiny matmuls through ptts_linear_forward triggers
+         * additional host<->device transfers before the real GPU flow pass. */
+        timestep_embed_cpu(&fm->flow.time[0], s, ts);
+        timestep_embed_cpu(&fm->flow.time[1], t, tt);
+
         ptts_cuda_flow_net_desc desc;
         memset(&desc, 0, sizeof(desc));
         desc.cond_w = fm->flow.cond_w;
@@ -663,6 +705,11 @@ static void flow_net_forward(const ptts_flowlm *fm, const float *cond, float s, 
         }
     }
 #endif
+
+    /* CPU fallback path */
+    linear_forward(fm->flow.input_w, fm->flow.input_b, FLOWLM_FLOW_DIM, FLOWLM_LATENT_DIM, x_in, 1, x);
+    timestep_embed(&fm->flow.time[0], s, ts);
+    timestep_embed(&fm->flow.time[1], t, tt);
 
     /* cond embed */
     linear_forward(fm->flow.cond_w, fm->flow.cond_b, FLOWLM_FLOW_DIM, FLOWLM_D_MODEL, cond, 1, tmp);

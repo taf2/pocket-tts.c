@@ -89,7 +89,9 @@ void ptts_linear_forward(float *y, const float *x, const float *w, const float *
         }
     }
 #else
+#ifdef _OPENMP
     #pragma omp parallel for collapse(2)
+#endif
     for (int t = 0; t < n; t++) {
         for (int o = 0; o < out; o++) {
             const float *xrow = x + t * in;
@@ -128,7 +130,9 @@ void ptts_conv1d_forward(float *y, const float *x, const float *w, const float *
     int out_per_group = out_ch / groups;
     int left_pad = k - stride;
 
+#ifdef _OPENMP
     #pragma omp parallel for
+#endif
     for (int oc = 0; oc < out_ch; oc++) {
         int g = oc / out_per_group;
         int in_base = g * in_per_group;
@@ -171,7 +175,9 @@ void ptts_convtr1d_forward(float *y, const float *x, const float *w, const float
     int in_per_group = in_ch / groups;
 
     // Parallelize over output channels to avoid race conditions (no atomic needed)
+#ifdef _OPENMP
     #pragma omp parallel for
+#endif
     for (int oc = 0; oc < out_ch; oc++) {
         int g = oc / out_per_group;
         int ocg = oc % out_per_group;

@@ -14,7 +14,7 @@ MAIN = main.c
 TARGET = ptts
 LIB = libptts.a
 
-.PHONY: all clean help cpu lib info test blas cuda cuda-validate cuda-validate-test mps
+.PHONY: all clean help cpu cpu-opt blas cuda cuda-opt cuda-validate cuda-validate-test mps lib info test
 
 all: help
 
@@ -22,8 +22,10 @@ help:
 	@echo "Pocket-TTS Pure C (WIP) - Build Targets"
 	@echo ""
 	@echo "  make cpu      - Pure C, no dependencies"
+	@echo "  make cpu-opt  - Pure C + OpenMP acceleration"
 	@echo "  make blas     - OpenBLAS accelerated"
 	@echo "  make cuda     - NVIDIA CUDA + cuBLAS accelerated"
+	@echo "  make cuda-opt - CUDA + cuBLAS + OpenMP CPU fallback acceleration"
 	@echo "  make cuda-validate - CUDA build with layer-by-layer validator"
 	@echo "  make mps      - Metal Performance Shaders (Apple Silicon)"
 	@echo ""
@@ -70,6 +72,16 @@ cuda: clean $(CUDA_OBJS) main.o
 	$(CC) $(CFLAGS) -o $(TARGET) $(CUDA_OBJS) main.o $(LDFLAGS)
 	@echo ""
 	@echo "Built with CUDA backend (cuBLAS)"
+
+# =============================================================================
+# Backend: CUDA optimized (cuBLAS + OpenMP CPU fallback)
+# =============================================================================
+cuda-opt: CFLAGS = $(CFLAGS_BASE) -DPTTS_USE_CUDA -fopenmp
+cuda-opt: LDFLAGS = -lm $(CUDA_LIBS) -fopenmp
+cuda-opt: clean $(CUDA_OBJS) main.o
+	$(CC) $(CFLAGS) -o $(TARGET) $(CUDA_OBJS) main.o $(LDFLAGS)
+	@echo ""
+	@echo "Built with CUDA optimized backend (cuBLAS + OpenMP)"
 
 # =============================================================================
 # Backend: CUDA validate (cuBLAS + layer-by-layer validator)

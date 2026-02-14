@@ -264,29 +264,33 @@ static void rope_apply(float *q, float *k, int T, int H, int D, float max_period
 static void attention_forward_context(const float *q, const float *k, const float *v,
                                       int T, int H, int D, int context, float *out) {
     float scale = 1.0f / sqrtf((float)D);
-    float *scores = (float *)malloc((size_t)T * sizeof(float));
+    float *scores = (float *)malloc((size_t)H * (size_t)T * sizeof(float));
     if (!scores) return;
 
+#ifdef _OPENMP
+    #pragma omp parallel for
+#endif
     for (int h = 0; h < H; h++) {
+        float *scores_h = scores + (size_t)h * T;
         for (int tq = 0; tq < T; tq++) {
             int n_keys = tq + 1;
             const float *qvec = q + (tq * H + h) * D;
             for (int tk = 0; tk < n_keys; tk++) {
                 if (context > 0 && (tq - tk) >= context) {
-                    scores[tk] = -1e30f;
+                    scores_h[tk] = -1e30f;
                     continue;
                 }
                 const float *kvec = k + (tk * H + h) * D;
                 float dot = 0.0f;
                 for (int d = 0; d < D; d++) dot += qvec[d] * kvec[d];
-                scores[tk] = dot * scale;
+                scores_h[tk] = dot * scale;
             }
-            softmax_inplace(scores, n_keys);
+            softmax_inplace(scores_h, n_keys);
             float *outvec = out + (tq * H + h) * D;
             for (int d = 0; d < D; d++) outvec[d] = 0.0f;
             for (int tk = 0; tk < n_keys; tk++) {
                 const float *vvec = v + (tk * H + h) * D;
-                float w = scores[tk];
+                float w = scores_h[tk];
                 for (int d = 0; d < D; d++) outvec[d] += w * vvec[d];
             }
         }
