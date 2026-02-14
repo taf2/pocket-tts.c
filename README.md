@@ -132,7 +132,21 @@ Use `./download_model.sh --voice alba` or pass `--voice none` to disable conditi
 make cpu
 # or: make blas
 # or: make cuda
+# or: make mps
 ```
+
+### Apple Silicon (MPS)
+
+For accelerated inference on Apple Silicon Macs:
+
+```bash
+make mps
+./ptts -d model -p "Hello world" -o out.wav
+```
+
+Requirements:
+- macOS 12.0+ (Monterey or later)
+- Apple Silicon (M1/M2/M3) or AMD GPU with Metal support
 
 CUDA diagnostics:
 

@@ -4,6 +4,21 @@
 #include "ptts_cuda.h"
 #endif
 
+#ifdef PTTS_USE_MPS
+#include "ptts_mps.h"
+static int g_mps_initialized = 0;
+static int g_mps_enabled = 1;
+
+static int mps_init_if_needed(void) {
+    if (!g_mps_initialized) {
+        if (ptts_mps_init() == 0) {
+            g_mps_initialized = 1;
+        }
+    }
+    return g_mps_initialized && g_mps_enabled;
+}
+#endif
+
 #ifdef PTTS_USE_BLAS
 #include <cblas.h>
 #endif
@@ -49,6 +64,11 @@ static int cuda_convtr_enabled(void) {
 
 void ptts_linear_forward(float *y, const float *x, const float *w, const float *b,
                          int n, int in, int out) {
+#ifdef PTTS_USE_MPS
+    if (mps_init_if_needed() && ptts_mps_linear_forward(y, x, w, b, n, in, out) == 0) {
+        return;
+    }
+#endif
 #ifdef PTTS_USE_CUDA
     if (cuda_linear_enabled() && ptts_cuda_linear_forward(y, x, w, b, n, in, out) == 0) {
         return;
@@ -79,6 +99,12 @@ void ptts_linear_forward(float *y, const float *x, const float *w, const float *
 
 void ptts_conv1d_forward(float *y, const float *x, const float *w, const float *b,
                          int in_ch, int out_ch, int T, int k, int stride, int groups) {
+#ifdef PTTS_USE_MPS
+    if (mps_init_if_needed() &&
+        ptts_mps_conv1d_forward(y, x, w, b, in_ch, out_ch, T, k, stride, groups) == 0) {
+        return;
+    }
+#endif
 #ifdef PTTS_USE_CUDA
     if (cuda_conv1d_enabled() &&
         ptts_cuda_conv1d_forward(y, x, w, b, in_ch, out_ch, T, k, stride, groups) == 0) {
@@ -114,6 +140,12 @@ void ptts_conv1d_forward(float *y, const float *x, const float *w, const float *
 
 void ptts_convtr1d_forward(float *y, const float *x, const float *w, const float *b,
                            int in_ch, int out_ch, int T, int k, int stride, int groups) {
+#ifdef PTTS_USE_MPS
+    if (mps_init_if_needed() &&
+        ptts_mps_convtr1d_forward(y, x, w, b, in_ch, out_ch, T, k, stride, groups) == 0) {
+        return;
+    }
+#endif
 #ifdef PTTS_USE_CUDA
     if (cuda_convtr_enabled() &&
         ptts_cuda_convtr1d_forward(y, x, w, b, in_ch, out_ch, T, k, stride, groups) == 0) {
@@ -155,6 +187,11 @@ void ptts_convtr1d_forward(float *y, const float *x, const float *w, const float
 }
 
 void ptts_elu_inplace(float *x, int n) {
+#ifdef PTTS_USE_MPS
+    if (mps_init_if_needed() && ptts_mps_elu_forward(x, n, 1.0f) == 0) {
+        return;
+    }
+#endif
     for (int i = 0; i < n; i++) {
         float v = x[i];
         x[i] = v >= 0.0f ? v : (expf(v) - 1.0f);
