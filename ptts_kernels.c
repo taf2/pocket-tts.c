@@ -22,6 +22,11 @@ static int mps_init_if_needed(void) {
 #ifdef PTTS_USE_BLAS
 #include <cblas.h>
 #endif
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
@@ -84,14 +89,21 @@ void ptts_linear_forward(float *y, const float *x, const float *w, const float *
         }
     }
 #else
+    #pragma omp parallel for collapse(2)
     for (int t = 0; t < n; t++) {
-        const float *xrow = x + t * in;
-        float *yrow = y + t * out;
         for (int o = 0; o < out; o++) {
+            const float *xrow = x + t * in;
             const float *wrow = w + o * in;
             float sum = b ? b[o] : 0.0f;
-            for (int i = 0; i < in; i++) sum += wrow[i] * xrow[i];
-            yrow[o] = sum;
+            int i = 0;
+            for (; i <= in - 4; i += 4) {
+                sum += wrow[i] * xrow[i] +
+                       wrow[i+1] * xrow[i+1] +
+                       wrow[i+2] * xrow[i+2] +
+                       wrow[i+3] * xrow[i+3];
+            }
+            for (; i < in; i++) sum += wrow[i] * xrow[i];
+            y[(size_t)t * out + o] = sum;
         }
     }
 #endif
@@ -116,6 +128,7 @@ void ptts_conv1d_forward(float *y, const float *x, const float *w, const float *
     int out_per_group = out_ch / groups;
     int left_pad = k - stride;
 
+    #pragma omp parallel for
     for (int oc = 0; oc < out_ch; oc++) {
         int g = oc / out_per_group;
         int in_base = g * in_per_group;
@@ -157,31 +170,32 @@ void ptts_convtr1d_forward(float *y, const float *x, const float *w, const float
     int out_per_group = out_ch / groups;
     int in_per_group = in_ch / groups;
 
-    memset(y, 0, (size_t)out_ch * out_len * sizeof(float));
+    // Parallelize over output channels to avoid race conditions (no atomic needed)
+    #pragma omp parallel for
+    for (int oc = 0; oc < out_ch; oc++) {
+        int g = oc / out_per_group;
+        int ocg = oc % out_per_group;
+        int in_base = g * in_per_group;
+        float *ych = y + (size_t)oc * out_len;
 
-    for (int ic = 0; ic < in_ch; ic++) {
-        int g = ic / in_per_group;
-        int out_base = g * out_per_group;
-        const float *wbase = w + (size_t)ic * out_per_group * k;
-        const float *xch = x + (size_t)ic * T;
-        for (int t = 0; t < T; t++) {
-            int out_start = t * stride;
-            for (int ocg = 0; ocg < out_per_group; ocg++) {
-                const float *wrow = wbase + ocg * k;
-                float *ych = y + (size_t)(out_base + ocg) * out_len;
+        float bias = b ? b[oc] : 0.0f;
+        for(int t=0; t<out_len; t++) ych[t] = bias;
+
+        for (int ic_offset = 0; ic_offset < in_per_group; ic_offset++) {
+            int ic = in_base + ic_offset;
+            const float *xch = x + (size_t)ic * T;
+            const float *wrow = w + ((size_t)ic * out_per_group + ocg) * k;
+
+            for (int t = 0; t < T; t++) {
+                int out_start = t * stride;
+                float xval = xch[t];
                 for (int kk = 0; kk < k; kk++) {
-                    int idx = out_start + kk;
-                    if (idx >= out_len) continue;
-                    ych[idx] += wrow[kk] * xch[t];
+                   int idx = out_start + kk;
+                   if (idx < out_len) {
+                       ych[idx] += wrow[kk] * xval;
+                   }
                 }
             }
-        }
-    }
-    if (b) {
-        for (int oc = 0; oc < out_ch; oc++) {
-            float bias = b[oc];
-            float *ych = y + (size_t)oc * out_len;
-            for (int t = 0; t < out_len; t++) ych[t] += bias;
         }
     }
 }
